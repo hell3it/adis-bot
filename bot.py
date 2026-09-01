@@ -7,7 +7,7 @@ app = Flask(__name__)
 
 # Токены и конфигурация
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8712152425:AAGvZNVaFctzKPzz2BNSDkouhJ69QGs6dZc")
-IMGBB_API_KEY = os.environ.get("IMGBB_API_KEY", "b40d6e24694b8e8f8c49980d22dfb234")
+IMGBB_API_KEY = os.environ.get("IMGBB_API_KEY", "c08f173c3969421ad6edd1a0a8248775")
 JSONBIN_API_KEY = os.environ.get("JSONBIN_API_KEY", "$2a$10$7Z/Uv7dZ0jB7J8xT6rQkku5y0h2Y8aH9F9l1Z2b3C4d5E6f7G8h9I")
 JSONBIN_BIN_ID = "6a95be10f5f4af5e2958d29e"
 
@@ -113,7 +113,7 @@ def webhook():
                 )
 
                 if jsonbin_res.ok:
-                    send_tg_message(chat_id, f"✅ Меню на сайте успешно обновлено!\n\nСвежее фото доступно на сайте.")
+                    send_tg_message(chat_id, "✅ Меню на сайте успешно обновлено!\n\nСвежее фото доступно на сайте.")
                 else:
                     send_tg_message(chat_id, "❌ Ошибка записи ссылки в базу данных JSONBin.")
             else:
