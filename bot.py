@@ -5,10 +5,10 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# Токены и конфигурация
+# Токены и рабочая конфигурация
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8712152425:AAGvZNVaFctzKPzz2BNSDkouhJ69QGs6dZc")
 IMGBB_API_KEY = os.environ.get("IMGBB_API_KEY", "c08f173c3969421ad6edd1a0a8248775")
-JSONBIN_API_KEY = os.environ.get("JSONBIN_API_KEY", "$2a$10$7Z/Uv7dZ0jB7J8xT6rQkku5y0h2Y8aH9F9l1Z2b3C4d5E6f7G8h9I")
+JSONBIN_API_KEY = os.environ.get("JSONBIN_API_KEY", "$2a$10$P1l9c6hF19G7WpMLt/TyCeFfmUF1hY0zUitagFtnrLzSwG4mntf/W")
 JSONBIN_BIN_ID = "6a95be10f5f4af5e2958d29e"
 
 ADMIN_LOGIN = "admin"
@@ -75,7 +75,7 @@ def webhook():
         file_id = photo_info["file_id"]
 
         try:
-            # 1. Получаем путь к файлу
+            # 1. Получаем путь к файлу в Telegram
             file_res = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile?file_id={file_id}").json()
             file_path = file_res.get("result", {}).get("file_path")
             
@@ -86,10 +86,10 @@ def webhook():
             tg_img_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
             img_data = requests.get(tg_img_url).content
             
-            # Кодируем фото в Base64 для надежной передачи в ImgBB
+            # Кодируем в Base64 для ImgBB
             img_b64 = base64.b64encode(img_data).decode("utf-8")
 
-            # 2. Загрузка в ImgBB
+            # 2. Загружаем на ImgBB
             imgbb_res = requests.post(
                 "https://api.imgbb.com/1/upload",
                 data={
@@ -101,7 +101,7 @@ def webhook():
             uploaded_url = imgbb_res.get("data", {}).get("url")
 
             if uploaded_url:
-                # 3. Запись ссылки в JSONBin
+                # 3. Сохраняем ссылку в базу данных JSONBin
                 headers = {
                     "Content-Type": "application/json",
                     "X-Master-Key": JSONBIN_API_KEY
@@ -113,9 +113,9 @@ def webhook():
                 )
 
                 if jsonbin_res.ok:
-                    send_tg_message(chat_id, "✅ Меню на сайте успешно обновлено!\n\nСвежее фото доступно на сайте.")
+                    send_tg_message(chat_id, "✅ Меню на сайте успешно обновлено!\n\nСвежее фото уже отображается на сайте.")
                 else:
-                    send_tg_message(chat_id, "❌ Ошибка записи ссылки в базу данных JSONBin.")
+                    send_tg_message(chat_id, f"❌ Ошибка JSONBin (Код {jsonbin_res.status_code}): {jsonbin_res.text}")
             else:
                 error_msg = imgbb_res.get("error", {}).get("message", "Неизвестная ошибка")
                 send_tg_message(chat_id, f"❌ Ошибка ImgBB: {error_msg}")
