@@ -1,132 +1,286 @@
+import asyncio
+import logging
 import os
-import base64
-import requests
-from flask import Flask, request, jsonify
+import aiohttp
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
-app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 
-# Токены и рабочая конфигурация
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8712152425:AAGvZNVaFctzKPzz2BNSDkouhJ69QGs6dZc")
-IMGBB_API_KEY = os.environ.get("IMGBB_API_KEY", "c08f173c3969421ad6edd1a0a8248775")
-JSONBIN_API_KEY = os.environ.get("JSONBIN_API_KEY", "$2a$10$P1l9c6hF19G7WpMLt/TyCeFfmUF1hY0zUitagFtnrLzSwG4mntf/W")
-JSONBIN_BIN_ID = "6a95be10f5f4af5e2958d29e"
+# ==================== НАСТРОЙКИ ====================
+BOT_TOKEN = "8712152425:AAGvZNVaFctzKPzz2BNSDkouhJ69QGs6dZc"
+JSONBIN_KEY = "$2a$10$P1l9c6hF19G7WpMLt/TyCeFfmUF1hY0zUitagFtnrLzSwG4mntf/W"
+BIN_ID = "6a95be10f5f4af5e2958d29e"
 
 ADMIN_LOGIN = "admin"
 ADMIN_PASSWORD = "11111"
 
-authorized_users = set()
-user_states = {}
+authenticated_admins = set()
 
-def send_tg_message(chat_id, text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": chat_id, "text": text})
+ITEMS_CATALOG = [
+    ("belyash", "Беляш с мясом", 130),
+    ("sosiska", "Сосиска в тесте", 100),
+    ("cheb_mix", "Чебурек Mix", 200),
+    ("cheb_meat", "Чебурек с мясом", 150),
+    ("cheb_cheese", "Чебурек с сыром", 150),
+    ("khush_meat", "Хушуур с мясом", 130),
+    ("khush_potato", "Хушуур с картофелем", 100),
+    ("pie_apple", "Пирожок с яблоком", 50),
+    ("pie_egg", "Пирожок с яйцом", 50),
+    ("pie_potato", "Пирожок с картошкой", 50),
+    ("pie_cabbage", "Пирожок с капустой", 50),
+    ("pie_liver", "Пирожок с печенью", 50),
+    ("pie_meat", "Пирожок с мясом", 50),
+    ("vat_jam", "Ватрушка с джемом", 50),
+    ("vat_curd", "Ватрушка с творогом", 50),
+    ("panc_milk", "Блин со сгущенкой", 80),
+    ("panc_jam", "Блин с джемом", 80),
+    ("panc_sour", "Блин со сметаной", 80),
+    ("panc_curd", "Блин с творогом", 100),
+    ("panc_ham", "Блин с ветчиной/сыром", 110),
+    ("panc_honey", "Блин с мёдом", 130),
+    ("panc_plain", "Один блин", 25),
+]
 
-@app.route("/", methods=["GET"])
-def home():
-    return "Adis Menu Bot is Active!", 200
+# FSM Состояния
+class AuthStates(StatesGroup):
+    waiting_for_login = State()
+    waiting_for_password = State()
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    update = request.get_json()
-    if not update or "message" not in update:
-        return jsonify({"status": "ok"}), 200
+class PriceStates(StatesGroup):
+    waiting_for_new_price = State()
 
-    message = update["message"]
-    chat_id = message["chat"]["id"]
-    text = message.get("text", "").strip()
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
 
-    # Авторизация
-    if text in ["/start", "/login"]:
-        if chat_id in authorized_users:
-            send_tg_message(chat_id, "✅ Вы уже авторизованы! Отправьте фотографию доски меню для обновления сайта.")
-        else:
-            user_states[chat_id] = "awaiting_login"
-            send_tg_message(chat_id, "🔐 Введите логин для доступа к управлению меню:")
-        return jsonify({"status": "ok"}), 200
+# ==================== РАБОТА С JSONBIN ====================
+async def get_bin_data() -> dict:
+    url = f"https://api.jsonbin.io/v3/b/{BIN_ID}/latest"
+    headers = {"X-Master-Key": JSONBIN_KEY, "X-Bin-Meta": "false"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+    except Exception as e:
+        logging.error(f"Ошибка чтения JSONBin: {e}")
+    return {"image_url": "", "out_of_stock": [], "prices": {}}
 
-    current_state = user_states.get(chat_id)
+async def update_bin_data(data: dict) -> bool:
+    url = f"https://api.jsonbin.io/v3/b/{BIN_ID}"
+    headers = {"Content-Type": "application/json", "X-Master-Key": JSONBIN_KEY}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.put(url, json=data, headers=headers) as resp:
+                return resp.status == 200
+    except Exception as e:
+        logging.error(f"Ошибка записи JSONBin: {e}")
+        return False
 
-    if current_state == "awaiting_login":
-        if text == ADMIN_LOGIN:
-            user_states[chat_id] = "awaiting_password"
-            send_tg_message(chat_id, "🔑 Логин принят. Введите пароль:")
-        else:
-            send_tg_message(chat_id, "❌ Неверный логин. Попробуйте еще раз или введите /login:")
-        return jsonify({"status": "ok"}), 200
+# ==================== КЛАВИАТУРЫ ====================
+def get_main_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📦 Стоп-лист (Наличие)", callback_data="open_stock")],
+        [InlineKeyboardButton(text="💰 Редактор цен", callback_data="open_prices")],
+        [InlineKeyboardButton(text="🚪 Выйти", callback_data="logout")]
+    ])
 
-    if current_state == "awaiting_password":
-        if text == ADMIN_PASSWORD:
-            authorized_users.add(chat_id)
-            user_states.pop(chat_id, None)
-            send_tg_message(chat_id, "🎉 Авторизация успешна!\n\nТеперь просто отправьте сюда фото доски меню, и сайт обновится автоматически.")
-        else:
-            send_tg_message(chat_id, "❌ Неверный пароль. Попробуйте еще раз:")
-        return jsonify({"status": "ok"}), 200
+def build_stock_keyboard(out_of_stock: list) -> InlineKeyboardMarkup:
+    keyboard, row = [], []
+    for item_id, item_name, _ in ITEMS_CATALOG:
+        icon = "🔴" if item_id in out_of_stock else "🟢"
+        row.append(InlineKeyboardButton(text=f"{icon} {item_name}", callback_data=f"toggle_{item_id}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="back_main")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-    if chat_id not in authorized_users:
-        send_tg_message(chat_id, "⛔ Доступ закрыт. Для входа напишите /login")
-        return jsonify({"status": "ok"}), 200
+def build_price_keyboard(current_prices: dict) -> InlineKeyboardMarkup:
+    keyboard, row = [], []
+    for item_id, item_name, default_price in ITEMS_CATALOG:
+        price = current_prices.get(item_id, default_price)
+        row.append(InlineKeyboardButton(text=f"{item_name}: {price}₽", callback_data=f"setprice_{item_id}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="back_main")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-    # Обработка фото
-    if "photo" in message:
-        send_tg_message(chat_id, "⏳ Фото получено! Загружаю в облако и обновляю сайт...")
-        
-        photo_info = message["photo"][-1]
-        file_id = photo_info["file_id"]
+# ==================== ПОШАГОВАЯ АВТОРИЗАЦИЯ ====================
+@dp.message(Command("start"))
+async def cmd_start(message: Message, state: FSMContext):
+    if message.from_user.id in authenticated_admins:
+        return await message.answer("Главное меню администратора:", reply_markup=get_main_menu())
+    
+    await state.clear()
+    await message.answer(
+        "🔒 <b>Панель управления кафе «Буузная Адис»</b>\n\n"
+        "Для работы требуется авторизация.\n"
+        "Введите <b>логин</b> сотрудника:",
+        parse_mode="HTML"
+    )
+    await state.set_state(AuthStates.waiting_for_login)
 
-        try:
-            # 1. Получаем путь к файлу в Telegram
-            file_res = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile?file_id={file_id}").json()
-            file_path = file_res.get("result", {}).get("file_path")
-            
-            if not file_path:
-                send_tg_message(chat_id, "❌ Ошибка скачивания фото из Telegram.")
-                return jsonify({"status": "ok"}), 200
+@dp.message(AuthStates.waiting_for_login)
+async def process_login(message: Message, state: FSMContext):
+    await state.update_data(login=message.text.strip())
+    # Удаляем сообщение пользователя с логином для безопасности
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
-            tg_img_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
-            img_data = requests.get(tg_img_url).content
-            
-            # Кодируем в Base64 для ImgBB
-            img_b64 = base64.b64encode(img_data).decode("utf-8")
+    await message.answer("🔑 Теперь введите <b>пароль</b>:", parse_mode="HTML")
+    await state.set_state(AuthStates.waiting_for_password)
 
-            # 2. Загружаем на ImgBB
-            imgbb_res = requests.post(
-                "https://api.imgbb.com/1/upload",
-                data={
-                    "key": IMGBB_API_KEY,
-                    "image": img_b64
-                }
-            ).json()
+@dp.message(AuthStates.waiting_for_password)
+async def process_password(message: Message, state: FSMContext):
+    user_data = await state.get_data()
+    login = user_data.get("login")
+    password = message.text.strip()
 
-            uploaded_url = imgbb_res.get("data", {}).get("url")
+    # Сразу удаляем сообщение с введенным паролем из чата
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
-            if uploaded_url:
-                # 3. Сохраняем ссылку в базу данных JSONBin
-                headers = {
-                    "Content-Type": "application/json",
-                    "X-Master-Key": JSONBIN_API_KEY
-                }
-                jsonbin_res = requests.put(
-                    f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}",
-                    headers=headers,
-                    json={"image_url": uploaded_url}
-                )
+    if login == ADMIN_LOGIN and password == ADMIN_PASSWORD:
+        authenticated_admins.add(message.from_user.id)
+        await state.clear()
+        await message.answer(
+            "✅ <b>Авторизация успешна!</b>\nВыберите раздел для управления:",
+            reply_markup=get_main_menu(),
+            parse_mode="HTML"
+        )
+    else:
+        await state.clear()
+        await message.answer(
+            "❌ <b>Неверные данные!</b> Доступ запрещен.\nДля повторной попытки нажмите /start",
+            parse_mode="HTML"
+        )
 
-                if jsonbin_res.ok:
-                    send_tg_message(chat_id, "✅ Меню на сайте успешно обновлено!\n\nСвежее фото уже отображается на сайте.")
-                else:
-                    send_tg_message(chat_id, f"❌ Ошибка JSONBin (Код {jsonbin_res.status_code}): {jsonbin_res.text}")
-            else:
-                error_msg = imgbb_res.get("error", {}).get("message", "Неизвестная ошибка")
-                send_tg_message(chat_id, f"❌ Ошибка ImgBB: {error_msg}")
+# ==================== НАВИГАЦИЯ И СТОП-ЛИСТ ====================
+@dp.callback_query(F.data == "back_main")
+async def cb_back_main(query: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await query.message.edit_text("Главное меню администратора:", reply_markup=get_main_menu())
+    await query.answer()
 
-        except Exception as e:
-            send_tg_message(chat_id, f"❌ Произошла ошибка: {str(e)}")
+@dp.callback_query(F.data == "logout")
+async def cb_logout(query: CallbackQuery, state: FSMContext):
+    authenticated_admins.discard(query.from_user.id)
+    await state.clear()
+    await query.message.edit_text("🚪 Вы вышли из системы. Для входа нажмите /start")
+    await query.answer()
 
-        return jsonify({"status": "ok"}), 200
+@dp.callback_query(F.data == "open_stock")
+async def cb_open_stock(query: CallbackQuery):
+    if query.from_user.id not in authenticated_admins:
+        return await query.answer("Требуется вход через /start", show_alert=True)
+    data = await get_bin_data()
+    out_of_stock = data.get("out_of_stock", [])
+    await query.message.edit_text(
+        "📦 <b>Управление наличием:</b>\n🟢 — есть в наличии\n🔴 — в стоп-листе\n<i>Нажмите, чтобы переключить:</i>",
+        reply_markup=build_stock_keyboard(out_of_stock),
+        parse_mode="HTML"
+    )
+    await query.answer()
 
-    send_tg_message(chat_id, "📸 Пожалуйста, отправьте фотографию меню.")
-    return jsonify({"status": "ok"}), 200
+@dp.callback_query(F.data.startswith("toggle_"))
+async def cb_toggle_stock(query: CallbackQuery):
+    if query.from_user.id not in authenticated_admins:
+        return await query.answer("Доступ запрещен", show_alert=True)
+    item_id = query.data.replace("toggle_", "")
+    data = await get_bin_data()
+    out_of_stock = data.get("out_of_stock", [])
+
+    if item_id in out_of_stock:
+        out_of_stock.remove(item_id)
+        msg = "🟢 Блюдо включено"
+    else:
+        out_of_stock.append(item_id)
+        msg = "🔴 Блюдо выключено"
+
+    data["out_of_stock"] = out_of_stock
+    await update_bin_data(data)
+    await query.message.edit_reply_markup(reply_markup=build_stock_keyboard(out_of_stock))
+    await query.answer(msg)
+
+# ==================== РЕДАКТОР ЦЕН ====================
+@dp.callback_query(F.data == "open_prices")
+async def cb_open_prices(query: CallbackQuery):
+    if query.from_user.id not in authenticated_admins:
+        return await query.answer("Требуется вход через /start", show_alert=True)
+    data = await get_bin_data()
+    prices = data.get("prices", {})
+    await query.message.edit_text(
+        "💰 <b>Редактор цен</b>\nНажмите на позицию, цену которой хотите изменить:",
+        reply_markup=build_price_keyboard(prices),
+        parse_mode="HTML"
+    )
+    await query.answer()
+
+@dp.callback_query(F.data.startswith("setprice_"))
+async def cb_select_item_for_price(query: CallbackQuery, state: FSMContext):
+    if query.from_user.id not in authenticated_admins:
+        return await query.answer("Доступ запрещен", show_alert=True)
+
+    item_id = query.data.replace("setprice_", "")
+    item_name = next((name for i_id, name, _ in ITEMS_CATALOG if i_id == item_id), item_id)
+
+    await state.update_data(edit_item_id=item_id, edit_item_name=item_name)
+    await query.message.answer(
+        f"✏️ Введите новую стоимость для позиции:\n<b>{item_name}</b> (только целое число в рублях):",
+        parse_mode="HTML"
+    )
+    await state.set_state(PriceStates.waiting_for_new_price)
+    await query.answer()
+
+@dp.message(PriceStates.waiting_for_new_price)
+async def process_new_price(message: Message, state: FSMContext):
+    raw = message.text.strip().replace("₽", "").replace("руб", "").strip()
+    if not raw.isdigit():
+        return await message.answer("⚠️ Введите корректную сумму числом (например: <code>150</code>).", parse_mode="HTML")
+
+    new_price = int(raw)
+    data_state = await state.get_data()
+    item_id = data_state.get("edit_item_id")
+    item_name = data_state.get("edit_item_name")
+
+    # Сохраняем в JSONBin
+    bin_data = await get_bin_data()
+    prices = bin_data.get("prices", {})
+    prices[item_id] = new_price
+    bin_data["prices"] = prices
+    await update_bin_data(bin_data)
+
+    await state.clear()
+    await message.answer(
+        f"✅ Цена для <b>{item_name}</b> изменена на <b>{new_price} ₽</b>!",
+        reply_markup=get_main_menu(),
+        parse_mode="HTML"
+    )
+
+# ==================== ЗАПУСК ====================
+async def main():
+    await bot.delete_webhook(drop_pending_updates=True)
+    print("Бот управления «Буузная Адис» v2.1 запущен...")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    asyncio.run(main())
