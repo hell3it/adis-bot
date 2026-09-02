@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import aiohttp
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -138,7 +139,6 @@ async def cmd_start(message: Message, state: FSMContext):
 @dp.message(AuthStates.waiting_for_login)
 async def process_login(message: Message, state: FSMContext):
     await state.update_data(login=message.text.strip())
-    # Удаляем сообщение пользователя с логином для безопасности
     try:
         await message.delete()
     except Exception:
@@ -153,7 +153,6 @@ async def process_password(message: Message, state: FSMContext):
     login = user_data.get("login")
     password = message.text.strip()
 
-    # Сразу удаляем сообщение с введенным паролем из чата
     try:
         await message.delete()
     except Exception:
@@ -262,7 +261,6 @@ async def process_new_price(message: Message, state: FSMContext):
     item_id = data_state.get("edit_item_id")
     item_name = data_state.get("edit_item_name")
 
-    # Сохраняем в JSONBin
     bin_data = await get_bin_data()
     prices = bin_data.get("prices", {})
     prices[item_id] = new_price
@@ -276,10 +274,26 @@ async def process_new_price(message: Message, state: FSMContext):
         parse_mode="HTML"
     )
 
-# ==================== ЗАПУСК ====================
+# ==================== СЕРВЕР ДЛЯ РЕНДЕРА И ЗАПУСК ====================
+async def render_health_check(request):
+    return web.Response(text="Bot is online and running!")
+
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
     print("Бот управления «Буузная Адис» v2.1 запущен...")
+
+    # Открываем фиктивный веб-порт, чтобы Render переключил статус в Live
+    app = web.Application()
+    app.router.add_get("/", render_health_check)
+    app.router.add_get("/health", render_health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"Микросервер для Render открыт на порту {port}")
+
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
