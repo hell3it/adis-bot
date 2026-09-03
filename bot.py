@@ -10,37 +10,59 @@ IMGBB_API_KEY = "c08f173c3969421ad6edd1a0a8248775"
 JSONBIN_API_KEY = "$2a$10$P1l9c6hF19G7WpMLt/TyCeFfmUF1hY0zUitagFtnrLzSwG4mntf/W"
 BIN_ID = "6a95be10f5f4af5e2958d29e"
 
+SITE_URL = "https://adis-cafe38.netlify.app"
 ADMIN_LOGIN = "admin"
 ADMIN_PASSWORD = "11111"
 
-# Сессии
 authenticated_admins = set()
-user_states = {} # user_id: {"state": ..., "data": ...}
+user_states = {}  # {uid: {"state": ..., "data": ...}}
 
-ITEMS_CATALOG = [
-    ("belyash", "Беляш с мясом", 130),
-    ("sosiska", "Сосиска в тесте", 100),
-    ("cheb_mix", "Чебурек Mix", 200),
-    ("cheb_meat", "Чебурек с мясом", 150),
-    ("cheb_cheese", "Чебурек с сыром", 150),
-    ("khush_meat", "Хушуур с мясом", 130),
-    ("khush_potato", "Хушуур с картофелем", 100),
-    ("pie_apple", "Пирожок с яблоком", 50),
-    ("pie_egg", "Пирожок с яйцом", 50),
-    ("pie_potato", "Пирожок с картошкой", 50),
-    ("pie_cabbage", "Пирожок с капустой", 50),
-    ("pie_liver", "Пирожок с печенью", 50),
-    ("pie_meat", "Пирожок с мясом", 50),
-    ("vat_jam", "Ватрушка с джемом", 50),
-    ("vat_curd", "Ватрушка с творогом", 50),
-    ("panc_milk", "Блин со сгущенкой", 80),
-    ("panc_jam", "Блин с джемом", 80),
-    ("panc_sour", "Блин со сметаной", 80),
-    ("panc_curd", "Блин с творогом", 100),
-    ("panc_ham", "Блин с ветчиной/сыром", 110),
-    ("panc_honey", "Блин с мёдом", 130),
-    ("panc_plain", "Один блин", 25),
-]
+# Каталог товаров, сгруппированный по категориям
+MENU_CATEGORIES = {
+    "bakery": {
+        "title": "🥟 Выпечка и чебуреки",
+        "items": [
+            ("belyash", "Беляш с мясом", 130),
+            ("sosiska", "Сосиска в тесте", 100),
+            ("cheb_mix", "Чебурек Mix", 200),
+            ("cheb_meat", "Чебурек с мясом", 150),
+            ("cheb_cheese", "Чебурек с сыром", 150),
+            ("khush_meat", "Хушуур с мясом", 130),
+            ("khush_potato", "Хушуур с картофелем", 100),
+        ]
+    },
+    "pies": {
+        "title": "🥧 Пирожки и ватрушки",
+        "items": [
+            ("pie_apple", "Пирожок с яблоком", 50),
+            ("pie_egg", "Пирожок с яйцом", 50),
+            ("pie_potato", "Пирожок с картошкой", 50),
+            ("pie_cabbage", "Пирожок с капустой", 50),
+            ("pie_liver", "Пирожок с печенью", 50),
+            ("pie_meat", "Пирожок с мясом", 50),
+            ("vat_jam", "Ватрушка с джемом", 50),
+            ("vat_curd", "Ватрушка с творогом", 50),
+        ]
+    },
+    "pancakes": {
+        "title": "🥞 Блины",
+        "items": [
+            ("panc_milk", "Блин со сгущенкой", 80),
+            ("panc_jam", "Блин с джемом", 80),
+            ("panc_sour", "Блин со сметаной", 80),
+            ("panc_curd", "Блин с творогом", 100),
+            ("panc_ham", "Блин с ветчиной/сыром", 110),
+            ("panc_honey", "Блин с мёдом", 130),
+            ("panc_plain", "Один блин", 25),
+        ]
+    }
+}
+
+# Плоский список для быстрого поиска блюда по ID
+ALL_ITEMS = {}
+for cat in MENU_CATEGORIES.values():
+    for item_id, name, def_price in cat["items"]:
+        ALL_ITEMS[item_id] = (name, def_price)
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
@@ -55,7 +77,7 @@ def run_web():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-# ==================== JSONBIN ФУНКЦИИ ====================
+# ==================== РАБОТА С БАЗОЙ JSONBIN ====================
 def get_bin_data():
     headers = {"X-Master-Key": JSONBIN_API_KEY, "X-Bin-Meta": "false"}
     try:
@@ -78,47 +100,80 @@ def update_bin_data(data):
 # ==================== КЛАВИАТУРЫ ====================
 def main_menu_kb():
     kb = telebot.types.InlineKeyboardMarkup()
-    kb.add(telebot.types.InlineKeyboardButton("📸 Обновить фото доски меню", callback_data="hint_photo"))
-    kb.add(telebot.types.InlineKeyboardButton("📦 Стоп-лист (Наличие)", callback_data="menu_stock"))
-    kb.add(telebot.types.InlineKeyboardButton("💰 Редактор цен", callback_data="menu_prices"))
-    kb.add(telebot.types.InlineKeyboardButton("🚪 Выйти", callback_data="menu_logout"))
+    kb.add(telebot.types.InlineKeyboardButton("📸 Обновить фото доски", callback_data="hint_photo"))
+    kb.add(telebot.types.InlineKeyboardButton("👁 Посмотреть текущее фото", callback_data="view_photo"))
+    kb.add(telebot.types.InlineKeyboardButton("📦 Стоп-лист (Наличие)", callback_data="categories_stock"))
+    kb.add(telebot.types.InlineKeyboardButton("💰 Редактор цен", callback_data="categories_price"))
+    kb.add(telebot.types.InlineKeyboardButton("🌐 Открыть витрину сайта", url=SITE_URL))
+    kb.add(telebot.types.InlineKeyboardButton("🚪 Выйти из системы", callback_data="menu_logout"))
     return kb
 
-def stock_kb(out_of_stock):
+def categories_kb(mode):
+    # mode: 'stock' или 'price'
+    kb = telebot.types.InlineKeyboardMarkup()
+    for cat_key, cat_val in MENU_CATEGORIES.items():
+        kb.add(telebot.types.InlineKeyboardButton(cat_val["title"], callback_data=f"cat_{mode}_{cat_key}"))
+    kb.add(telebot.types.InlineKeyboardButton("⬅️ В главное меню", callback_data="back_main"))
+    return kb
+
+def stock_items_kb(cat_key, out_of_stock):
     kb = telebot.types.InlineKeyboardMarkup(row_width=2)
     buttons = []
-    for item_id, name, _ in ITEMS_CATALOG:
+    for item_id, name, _ in MENU_CATEGORIES[cat_key]["items"]:
         icon = "🔴" if item_id in out_of_stock else "🟢"
-        buttons.append(telebot.types.InlineKeyboardButton(f"{icon} {name}", callback_data=f"stock_{item_id}"))
+        buttons.append(telebot.types.InlineKeyboardButton(f"{icon} {name}", callback_data=f"toggle_stock_{cat_key}_{item_id}"))
     kb.add(*buttons)
-    kb.add(telebot.types.InlineKeyboardButton("⬅️ В главное меню", callback_data="back_main"))
+    kb.add(telebot.types.InlineKeyboardButton("⬅️ Назад к категориям", callback_data="categories_stock"))
     return kb
 
-def prices_kb(current_prices):
+def price_items_kb(cat_key, current_prices):
     kb = telebot.types.InlineKeyboardMarkup(row_width=2)
     buttons = []
-    for item_id, name, default_price in ITEMS_CATALOG:
-        price = current_prices.get(item_id, default_price)
-        buttons.append(telebot.types.InlineKeyboardButton(f"{name}: {price}₽", callback_data=f"price_{item_id}"))
+    for item_id, name, def_price in MENU_CATEGORIES[cat_key]["items"]:
+        price = current_prices.get(item_id, def_price)
+        buttons.append(telebot.types.InlineKeyboardButton(f"{name}: {price}₽", callback_data=f"edit_price_{cat_key}_{item_id}"))
     kb.add(*buttons)
-    kb.add(telebot.types.InlineKeyboardButton("⬅️ В главное меню", callback_data="back_main"))
+    kb.add(telebot.types.InlineKeyboardButton("⬅️ Назад к категориям", callback_data="categories_price"))
     return kb
 
-# ==================== АВТОРИЗАЦИЯ ====================
+# ==================== АВТОРИЗАЦИЯ И СТАРТ ====================
 @bot.message_handler(commands=['start'])
 def start_cmd(message):
     uid = message.from_user.id
     if uid in authenticated_admins:
-        bot.send_message(message.chat.id, "Главное меню администратора:", reply_markup=main_menu_kb())
+        show_dashboard(message.chat.id)
         return
 
     user_states[uid] = {"state": "LOGIN"}
     bot.send_message(
         message.chat.id,
-        "🔒 <b>Панель управления кафе «Буузная Адис»</b>\n\nВведите <b>логин</b> сотрудника:",
+        "🔒 <b>Панель управления кафе «Буузная Адис» V2.6</b>\n\n"
+        "Для работы требуется авторизация.\n"
+        "Введите <b>логин</b> сотрудника:",
         parse_mode="HTML"
     )
 
+def show_dashboard(chat_id, message_id=None):
+    bin_data = get_bin_data()
+    out_count = len(bin_data.get("out_of_stock", []))
+    status_icon = "🟢 Витрина активна"
+    
+    text = (
+        f"<b>Панель администратора «Буузная Адис»</b>\n\n"
+        f"Статус: {status_icon}\n"
+        f"Позиций в стоп-листе: <b>{out_count}</b> шт.\n\n"
+        f"<i>Выберите нужное действие:</i>"
+    )
+    
+    if message_id:
+        try:
+            bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, parse_mode="HTML", reply_markup=main_menu_kb())
+            return
+        except Exception:
+            pass
+    bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=main_menu_kb())
+
+# ==================== ВВОД ТЕКСТА (ЛОГИН/ПАРОЛЬ/ЦЕНА) ====================
 @bot.message_handler(func=lambda msg: user_states.get(msg.from_user.id, {}).get("state") in ["LOGIN", "PASSWORD", "SET_PRICE"])
 def handle_text_inputs(message):
     uid = message.from_user.id
@@ -126,6 +181,7 @@ def handle_text_inputs(message):
     state = state_info.get("state")
     text = message.text.strip()
 
+    # Удаляем сообщение с паролем/ценой, чтобы чат оставался чистым
     try:
         bot.delete_message(message.chat.id, message.message_id)
     except Exception:
@@ -140,43 +196,48 @@ def handle_text_inputs(message):
         if login == ADMIN_LOGIN and text == ADMIN_PASSWORD:
             authenticated_admins.add(uid)
             user_states[uid] = {}
-            bot.send_message(
-                message.chat.id,
-                "✅ <b>Авторизация успешна!</b>\n\n"
-                "• Чтобы изменить доску: <b>просто отправь сюда фото</b>.\n"
-                "• Или выбери действие ниже:",
-                parse_mode="HTML",
-                reply_markup=main_menu_kb()
-            )
+            show_dashboard(message.chat.id)
         else:
             user_states[uid] = {}
-            bot.send_message(message.chat.id, "❌ Неверный логин или пароль. Нажмите /start для повтора.")
+            bot.send_message(message.chat.id, "❌ Неверный логин или пароль. Нажмите /start для повторной попытки.")
 
     elif state == "SET_PRICE":
-        clean_price = text.replace("₽", "").replace("руб", "").strip()
-        if not clean_price.isdigit():
-            bot.send_message(message.chat.id, "⚠️ Введите корректную сумму числом (например: <code>150</code>).", parse_mode="HTML")
+        clean = text.replace("₽", "").replace("руб", "").strip()
+        if not clean.isdigit():
+            bot.send_message(message.chat.id, "⚠️ Введите корректную сумму <b>целым числом</b> (например: <code>150</code>).", parse_mode="HTML")
             return
 
-        new_price = int(clean_price)
+        new_price = int(clean)
         item_id = state_info.get("item_id")
-        item_name = state_info.get("item_name")
+        cat_key = state_info.get("cat_key")
+        item_name = ALL_ITEMS.get(item_id, (item_id, 0))[0]
 
+        # Сохраняем в JSONBin
         bin_data = get_bin_data()
         prices = bin_data.get("prices", {})
         prices[item_id] = new_price
         bin_data["prices"] = prices
         update_bin_data(bin_data)
 
+        # Удаляем сервисное сообщение с запросом цены
+        prompt_msg_id = state_info.get("prompt_msg_id")
+        if prompt_msg_id:
+            try:
+                bot.delete_message(message.chat.id, prompt_msg_id)
+            except Exception:
+                pass
+
         user_states[uid] = {}
+        
+        # Обновляем список цен категории на месте
         bot.send_message(
             message.chat.id,
-            f"✅ Цена для <b>{item_name}</b> изменена на <b>{new_price} ₽</b>!",
+            f"✅ Стоимость <b>{item_name}</b> обновлена: <b>{new_price} ₽</b>",
             parse_mode="HTML",
-            reply_markup=main_menu_kb()
+            reply_markup=price_items_kb(cat_key, prices)
         )
 
-# ==================== ЗАГРУЗКА ФОТО ====================
+# ==================== ЗАГРУЗКА ФОТО ДОСКИ МЕНЮ ====================
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     uid = message.from_user.id
@@ -184,7 +245,7 @@ def handle_photo(message):
         bot.reply_to(message, "⚠️ Сначала авторизуйтесь через /start")
         return
 
-    msg = bot.reply_to(message, "⏳ Фото получено! Загружаю на CDN...")
+    msg = bot.reply_to(message, "⏳ Загружаю свежее фото на сервер меню...")
     try:
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded_file = bot.download_file(file_info.file_path)
@@ -205,9 +266,8 @@ def handle_photo(message):
             update_bin_data(bin_data)
 
             bot.edit_message_text(
-                f"✅ <b>Меню успешно обновлено!</b>\n\n"
-                f"🖼 Фото открывается без VPN у всех клиентов.\n\n"
-                f"🌐 Сайт: https://adis-cafe38.netlify.app",
+                "✅ <b>Фотография меню успешно обновлена!</b>\n\n"
+                "Она моментально доступна гостям на сайте и в мобильном приложении без VPN.",
                 chat_id=message.chat.id,
                 message_id=msg.message_id,
                 parse_mode="HTML",
@@ -219,7 +279,7 @@ def handle_photo(message):
     except Exception as e:
         bot.edit_message_text(f"❌ Ошибка: {str(e)}", chat_id=message.chat.id, message_id=msg.message_id)
 
-# ==================== CALLBACKS ====================
+# ==================== ОБРАБОТКА ИНЛАЙН-КНОПОК ====================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
     uid = call.from_user.id
@@ -229,35 +289,58 @@ def handle_callbacks(call):
 
     data = call.data
 
+    # Главное меню и навигация
     if data == "back_main":
         user_states[uid] = {}
-        bot.edit_message_text("Главное меню администратора:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=main_menu_kb())
+        show_dashboard(call.message.chat.id, call.message.message_id)
         bot.answer_callback_query(call.id)
 
     elif data == "hint_photo":
-        bot.send_message(call.message.chat.id, "📸 Просто отправь фото доски в этот чат как картинку.")
+        bot.send_message(call.message.chat.id, "📸 Просто отправьте фото доски с ценами в этот чат как обычную картинку.")
+        bot.answer_callback_query(call.id)
+
+    elif data == "view_photo":
+        bin_data = get_bin_data()
+        img_url = bin_data.get("image_url", "")
+        if img_url:
+            bot.send_photo(call.message.chat.id, img_url, caption="🖼 <b>Текущее фото меню на сайте</b>", parse_mode="HTML")
+        else:
+            bot.send_message(call.message.chat.id, "⚠️ Фотография меню еще не была загружена.")
         bot.answer_callback_query(call.id)
 
     elif data == "menu_logout":
         authenticated_admins.discard(uid)
         user_states[uid] = {}
-        bot.edit_message_text("🚪 Вы вышли. Нажмите /start для входа.", chat_id=call.message.chat.id, message_id=call.message.message_id)
+        bot.edit_message_text("🚪 Вы вышли из системы. Нажмите /start для входа.", chat_id=call.message.chat.id, message_id=call.message.message_id)
         bot.answer_callback_query(call.id)
 
-    elif data == "menu_stock":
-        bin_data = get_bin_data()
-        out_of_stock = bin_data.get("out_of_stock", [])
+    # Категории стоп-листа
+    elif data == "categories_stock":
         bot.edit_message_text(
-            "📦 <b>Управление наличием:</b>\n🟢 — есть в наличии\n🔴 — в стоп-листе\n<i>Нажмите, чтобы изменить:</i>",
+            "📦 <b>Управление стоп-листом</b>\nВыберите категорию блюд:",
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
             parse_mode="HTML",
-            reply_markup=stock_kb(out_of_stock)
+            reply_markup=categories_kb("stock")
         )
         bot.answer_callback_query(call.id)
 
-    elif data.startswith("stock_"):
-        item_id = data.replace("stock_", "")
+    elif data.startswith("cat_stock_"):
+        cat_key = data.replace("cat_stock_", "")
+        bin_data = get_bin_data()
+        out_of_stock = bin_data.get("out_of_stock", [])
+        cat_title = MENU_CATEGORIES[cat_key]["title"]
+        bot.edit_message_text(
+            f"📦 <b>Стоп-лист: {cat_title}</b>\n\n🟢 — есть в наличии\n🔴 — в стоп-листе\n<i>Нажмите для переключения:</i>",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            parse_mode="HTML",
+            reply_markup=stock_items_kb(cat_key, out_of_stock)
+        )
+        bot.answer_callback_query(call.id)
+
+    elif data.startswith("toggle_stock_"):
+        _, _, cat_key, item_id = data.split("_", 3)
         bin_data = get_bin_data()
         out_of_stock = bin_data.get("out_of_stock", [])
 
@@ -271,36 +354,59 @@ def handle_callbacks(call):
         bin_data["out_of_stock"] = out_of_stock
         update_bin_data(bin_data)
 
-        bot.edit_message_reply_markup(chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=stock_kb(out_of_stock))
+        bot.edit_message_reply_markup(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=stock_items_kb(cat_key, out_of_stock)
+        )
         bot.answer_callback_query(call.id, alert_text)
 
-    elif data == "menu_prices":
-        bin_data = get_bin_data()
-        prices = bin_data.get("prices", {})
+    # Категории редактора цен
+    elif data == "categories_price":
         bot.edit_message_text(
-            "💰 <b>Редактор цен</b>\nВыберите позицию для изменения стоимости:",
+            "💰 <b>Редактор цен</b>\nВыберите категорию:",
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
             parse_mode="HTML",
-            reply_markup=prices_kb(prices)
+            reply_markup=categories_kb("price")
         )
         bot.answer_callback_query(call.id)
 
-    elif data.startswith("price_"):
-        item_id = data.replace("price_", "")
-        item_name = next((name for i_id, name, _ in ITEMS_CATALOG if i_id == item_id), item_id)
-        user_states[uid] = {"state": "SET_PRICE", "item_id": item_id, "item_name": item_name}
+    elif data.startswith("cat_price_"):
+        cat_key = data.replace("cat_price_", "")
+        bin_data = get_bin_data()
+        prices = bin_data.get("prices", {})
+        cat_title = MENU_CATEGORIES[cat_key]["title"]
+        bot.edit_message_text(
+            f"💰 <b>Цены: {cat_title}</b>\nВыберите позицию для изменения:",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            parse_mode="HTML",
+            reply_markup=price_items_kb(cat_key, prices)
+        )
+        bot.answer_callback_query(call.id)
 
-        bot.send_message(
+    elif data.startswith("edit_price_"):
+        _, _, cat_key, item_id = data.split("_", 3)
+        item_name = ALL_ITEMS.get(item_id, (item_id, 0))[0]
+
+        prompt_msg = bot.send_message(
             call.message.chat.id,
-            f"✏️ Введите новую цену для:\n<b>{item_name}</b> (в рублях, целое число):",
+            f"✏️ Введите новую стоимость для позиции:\n<b>{item_name}</b> (в рублях, только число):",
             parse_mode="HTML"
         )
+
+        user_states[uid] = {
+            "state": "SET_PRICE",
+            "item_id": item_id,
+            "cat_key": cat_key,
+            "prompt_msg_id": prompt_msg.message_id
+        }
         bot.answer_callback_query(call.id)
 
 # ==================== ЗАПУСК ====================
 if __name__ == "__main__":
-    print("🚀 Запуск бота кафе «Адис» v2.5...")
+    print("🚀 Запуск улучшенного бота «Буузная Адис» v2.6...")
     server_thread = Thread(target=run_web)
     server_thread.daemon = True
     server_thread.start()
