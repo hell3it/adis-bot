@@ -22,6 +22,9 @@ BOT_TOKEN = "8712152425:AAGvZNVaFctzKPzz2BNSDkouhJ69QGs6dZc"
 JSONBIN_KEY = "$2a$10$P1l9c6hF19G7WpMLt/TyCeFfmUF1hY0zUitagFtnrLzSwG4mntf/W"
 BIN_ID = "6a95be10f5f4af5e2958d29e"
 
+# Публичный ключ ImgBB для стабильной загрузки в РФ
+IMGBB_API_KEY = "6d207e02198a847aa98d0a2a901485a5"
+
 ADMIN_LOGIN = "admin"
 ADMIN_PASSWORD = "11111"
 
@@ -86,21 +89,22 @@ async def update_bin_data(data: dict) -> bool:
         logging.error(f"Ошибка записи JSONBin: {e}")
         return False
 
-# Загрузка фото в публичное облако
-async def upload_image_to_web(file_bytes: bytes) -> str | None:
-    url = "https://catbox.moe/user/api.php"
+# Загрузка изображения на ImgBB (стабильный CDN в РФ)
+async def upload_image_to_imgbb(file_bytes: bytes) -> str | None:
+    url = "https://api.imgbb.com/1/upload"
     data = FormData()
-    data.add_field('reqtype', 'fileupload')
-    data.add_field('fileToUpload', file_bytes, filename='menu.jpg', content_type='image/jpeg')
-    
+    data.add_field("key", IMGBB_API_KEY)
+    data.add_field("image", file_bytes, filename="menu.jpg", content_type="image/jpeg")
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, data=data) as resp:
                 if resp.status == 200:
-                    img_url = await resp.text()
-                    return img_url.strip()
+                    res_json = await resp.json()
+                    if res_json.get("success"):
+                        return res_json["data"]["url"]
     except Exception as e:
-        logging.error(f"Ошибка загрузки на хостинг картинок: {e}")
+        logging.error(f"Ошибка загрузки на ImgBB: {e}")
     return None
 
 # ==================== КЛАВИАТУРЫ ====================
@@ -205,21 +209,18 @@ async def handle_menu_photo(message: Message):
     if message.from_user.id not in authenticated_admins:
         return await message.answer("⚠️ Сначала войдите в систему через /start")
 
-    status_msg = await message.answer("⏳ Загружаю фотографию на сервер меню...")
+    status_msg = await message.answer("⏳ Загружаю фотографию на защищенный сервер меню...")
 
     try:
-        # Скачиваем наибольший доступный размер фото
         photo = message.photo[-1]
         file_info = await bot.get_file(photo.file_id)
         file_bytes_io = await bot.download_file(file_info.file_path)
         file_bytes = file_bytes_io.read()
 
-        # Выгружаем на публичный CDN
-        image_url = await upload_image_to_web(file_bytes)
+        image_url = await upload_image_to_imgbb(file_bytes)
         if not image_url:
             return await status_msg.edit_text("❌ Ошибка загрузки изображения на хостинг. Попробуйте еще раз.")
 
-        # Сохраняем в JSONBin
         bin_data = await get_bin_data()
         bin_data["image_url"] = image_url
         success = await update_bin_data(bin_data)
@@ -227,7 +228,7 @@ async def handle_menu_photo(message: Message):
         if success:
             await status_msg.edit_text(
                 "✅ <b>Фотография меню успешно обновлена!</b>\n\n"
-                "Новое фото появится на сайте и в приложении в течение пары минут (после обновления кэша).",
+                "Изображение доступно без VPN на любых устройствах.",
                 parse_mode="HTML",
                 reply_markup=get_main_menu()
             )
@@ -235,7 +236,7 @@ async def handle_menu_photo(message: Message):
             await status_msg.edit_text("❌ Не удалось обновить данные в базе JSONBin.")
     except Exception as e:
         logging.error(f"Ошибка при обработке фото: {e}")
-        await status_msg.edit_text("❌ Произошла непредвиденная ошибка при загрузке фото.")
+        await status_msg.edit_text("❌ Произошла ошибка при загрузке фото.")
 
 # ==================== НАВИГАЦИЯ И СТОП-ЛИСТ ====================
 @dp.callback_query(F.data == "back_main")
@@ -338,17 +339,27 @@ async def process_new_price(message: Message, state: FSMContext):
         parse_mode="HTML"
     )
 
-# ==================== СЕРВЕР ДЛЯ РЕНДЕРА И ЗАПУСК ====================
+# ==================== ВЕБ-СЕРВЕР И ПРОКСИ ДАННЫХ ====================
 async def render_health_check(request):
     return web.Response(text="Bot is online and running!")
 
+# Прямая раздача данных для сайта без блокировок
+async def api_get_menu(request):
+    data = await get_bin_data()
+    return web.json_response(data, headers={
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET"
+    })
+
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
-    print("Бот управления «Буузная Адис» v2.2 запущен...")
+    print("Бот управления «Буузная Адис» v2.3 запущен...")
 
     app = web.Application()
     app.router.add_get("/", render_health_check)
     app.router.add_get("/health", render_health_check)
+    app.router.add_get("/api/menu", api_get_menu)
+    
     runner = web.AppRunner(app)
     await runner.setup()
     
