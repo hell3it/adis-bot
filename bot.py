@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import aiohttp
-from aiohttp import web, FormData
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -22,8 +22,8 @@ BOT_TOKEN = "8712152425:AAGvZNVaFctzKPzz2BNSDkouhJ69QGs6dZc"
 JSONBIN_KEY = "$2a$10$P1l9c6hF19G7WpMLt/TyCeFfmUF1hY0zUitagFtnrLzSwG4mntf/W"
 BIN_ID = "6a95be10f5f4af5e2958d29e"
 
-# Публичный ключ ImgBB для стабильной загрузки в РФ
-IMGBB_API_KEY = "6d207e02198a847aa98d0a2a901485a5"
+# Публичный адрес твоего сервиса на Render
+RENDER_PUBLIC_URL = "https://adis-menu-bot.onrender.com"
 
 ADMIN_LOGIN = "admin"
 ADMIN_PASSWORD = "11111"
@@ -88,24 +88,6 @@ async def update_bin_data(data: dict) -> bool:
     except Exception as e:
         logging.error(f"Ошибка записи JSONBin: {e}")
         return False
-
-# Загрузка изображения на ImgBB (стабильный CDN в РФ)
-async def upload_image_to_imgbb(file_bytes: bytes) -> str | None:
-    url = "https://api.imgbb.com/1/upload"
-    data = FormData()
-    data.add_field("key", IMGBB_API_KEY)
-    data.add_field("image", file_bytes, filename="menu.jpg", content_type="image/jpeg")
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, data=data) as resp:
-                if resp.status == 200:
-                    res_json = await resp.json()
-                    if res_json.get("success"):
-                        return res_json["data"]["url"]
-    except Exception as e:
-        logging.error(f"Ошибка загрузки на ImgBB: {e}")
-    return None
 
 # ==================== КЛАВИАТУРЫ ====================
 def get_main_menu() -> InlineKeyboardMarkup:
@@ -196,7 +178,7 @@ async def process_password(message: Message, state: FSMContext):
             parse_mode="HTML"
         )
 
-# ==================== ЗАГРУЗКА ФОТО МЕНЮ ====================
+# ==================== СОХРАНЕНИЕ ФОТО МЕНЮ ====================
 @dp.callback_query(F.data == "hint_photo")
 async def cb_hint_photo(query: CallbackQuery):
     if query.from_user.id not in authenticated_admins:
@@ -209,34 +191,38 @@ async def handle_menu_photo(message: Message):
     if message.from_user.id not in authenticated_admins:
         return await message.answer("⚠️ Сначала войдите в систему через /start")
 
-    status_msg = await message.answer("⏳ Загружаю фотографию на защищенный сервер меню...")
+    status_msg = await message.answer("⏳ Сохраняю фотографию на сервере...")
 
     try:
         photo = message.photo[-1]
         file_info = await bot.get_file(photo.file_id)
         file_bytes_io = await bot.download_file(file_info.file_path)
-        file_bytes = file_bytes_io.read()
+        
+        # Сохраняем прямо на сервере Render
+        menu_path = os.path.join(os.getcwd(), "menu.jpg")
+        with open(menu_path, "wb") as f:
+            f.write(file_bytes_io.read())
 
-        image_url = await upload_image_to_imgbb(file_bytes)
-        if not image_url:
-            return await status_msg.edit_text("❌ Ошибка загрузки изображения на хостинг. Попробуйте еще раз.")
+        # Формируем URL к нашему же серверу Render с меткой времени от кэша
+        image_url = f"{RENDER_PUBLIC_URL}/menu.jpg?v={int(asyncio.get_event_loop().time())}"
 
+        # Записываем ссылку в JSONBin
         bin_data = await get_bin_data()
         bin_data["image_url"] = image_url
         success = await update_bin_data(bin_data)
 
         if success:
             await status_msg.edit_text(
-                "✅ <b>Фотография меню успешно обновлена!</b>\n\n"
-                "Изображение доступно без VPN на любых устройствах.",
+                "✅ <b>Фотография меню успешно сохранена!</b>\n\n"
+                "Сервер начал прямую раздачу фото для сайта и мобильного приложения.",
                 parse_mode="HTML",
                 reply_markup=get_main_menu()
             )
         else:
-            await status_msg.edit_text("❌ Не удалось обновить данные в базе JSONBin.")
+            await status_msg.edit_text("❌ Фото сохранено, но не удалось обновить базу JSONBin.")
     except Exception as e:
         logging.error(f"Ошибка при обработке фото: {e}")
-        await status_msg.edit_text("❌ Произошла ошибка при загрузке фото.")
+        await status_msg.edit_text("❌ Произошла ошибка при сохранении фото.")
 
 # ==================== НАВИГАЦИЯ И СТОП-ЛИСТ ====================
 @dp.callback_query(F.data == "back_main")
@@ -339,26 +325,28 @@ async def process_new_price(message: Message, state: FSMContext):
         parse_mode="HTML"
     )
 
-# ==================== ВЕБ-СЕРВЕР И ПРОКСИ ДАННЫХ ====================
+# ==================== ВЕБ-СЕРВЕР ====================
 async def render_health_check(request):
     return web.Response(text="Bot is online and running!")
 
-# Прямая раздача данных для сайта без блокировок
-async def api_get_menu(request):
-    data = await get_bin_data()
-    return web.json_response(data, headers={
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET"
-    })
+# Отдача самого файла фото меню сайту
+async def serve_menu_image(request):
+    menu_path = os.path.join(os.getcwd(), "menu.jpg")
+    if os.path.exists(menu_path):
+        return web.FileResponse(menu_path, headers={
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "no-cache"
+        })
+    return web.Response(text="Image not found", status=404)
 
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
-    print("Бот управления «Буузная Адис» v2.3 запущен...")
+    print("Бот управления «Буузная Адис» v2.4 запущен...")
 
     app = web.Application()
     app.router.add_get("/", render_health_check)
     app.router.add_get("/health", render_health_check)
-    app.router.add_get("/api/menu", api_get_menu)
+    app.router.add_get("/menu.jpg", serve_menu_image)
     
     runner = web.AppRunner(app)
     await runner.setup()
