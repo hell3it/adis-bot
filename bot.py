@@ -5,7 +5,7 @@ from threading import Thread
 from flask import Flask
 
 # ==================== НАСТРОЙКИ ====================
-TELEGRAM_BOT_TOKEN = "8712152425:AAGvZNVaFctzKPzz2BNSDkouhJ69QGs6dZc"
+TELEGRAM_BOT_TOKEN = "8712152425:AAGdlJ2qmUrIU41bGtBo3dTqaqmJrqjLpg0"
 IMGBB_API_KEY = "c08f173c3969421ad6edd1a0a8248775"
 JSONBIN_API_KEY = "$2a$10$P1l9c6hF19G7WpMLt/TyCeFfmUF1hY0zUitagFtnrLzSwG4mntf/W"
 BIN_ID = "6a95be10f5f4af5e2958d29e"
@@ -104,7 +104,7 @@ def prices_kb(current_prices):
     kb.add(telebot.types.InlineKeyboardButton("⬅️ В главное меню", callback_data="back_main"))
     return kb
 
-# ==================== ОБРАБОТКА КОМАНД И АВТОРИЗАЦИИ ====================
+# ==================== АВТОРИЗАЦИЯ ====================
 @bot.message_handler(commands=['start'])
 def start_cmd(message):
     uid = message.from_user.id
@@ -126,7 +126,6 @@ def handle_text_inputs(message):
     state = state_info.get("state")
     text = message.text.strip()
 
-    # Удаляем сообщение с введенным паролем или логином ради безопасности
     try:
         bot.delete_message(message.chat.id, message.message_id)
     except Exception:
@@ -177,7 +176,7 @@ def handle_text_inputs(message):
             reply_markup=main_menu_kb()
         )
 
-# ==================== ЗАГРУЗКА ФОТО (ПРОВЕРЕННЫЙ IMGBB) ====================
+# ==================== ЗАГРУЗКА ФОТО ====================
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     uid = message.from_user.id
@@ -199,10 +198,8 @@ def handle_photo(message):
         res_json = res.json()
 
         if res_json.get("success"):
-            # Берем прямую ссылку на саму картинку (i.ibb.co)
             image_url = res_json["data"]["url"]
 
-            # Сохраняем фото в JSONBin, НЕ стирая цены и стоп-лист
             bin_data = get_bin_data()
             bin_data["image_url"] = image_url
             update_bin_data(bin_data)
@@ -222,7 +219,7 @@ def handle_photo(message):
     except Exception as e:
         bot.edit_message_text(f"❌ Ошибка: {str(e)}", chat_id=message.chat.id, message_id=msg.message_id)
 
-# ==================== CALLBACK-КНОПКИ ====================
+# ==================== CALLBACKS ====================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
     uid = call.from_user.id
