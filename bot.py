@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import aiohttp
-from aiohttp import web
+from aiohttp import web, FormData
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -52,7 +52,6 @@ ITEMS_CATALOG = [
     ("panc_plain", "Один блин", 25),
 ]
 
-# FSM Состояния
 class AuthStates(StatesGroup):
     waiting_for_login = State()
     waiting_for_password = State()
@@ -87,9 +86,27 @@ async def update_bin_data(data: dict) -> bool:
         logging.error(f"Ошибка записи JSONBin: {e}")
         return False
 
+# Загрузка фото в публичное облако
+async def upload_image_to_web(file_bytes: bytes) -> str | None:
+    url = "https://catbox.moe/user/api.php"
+    data = FormData()
+    data.add_field('reqtype', 'fileupload')
+    data.add_field('fileToUpload', file_bytes, filename='menu.jpg', content_type='image/jpeg')
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, data=data) as resp:
+                if resp.status == 200:
+                    img_url = await resp.text()
+                    return img_url.strip()
+    except Exception as e:
+        logging.error(f"Ошибка загрузки на хостинг картинок: {e}")
+    return None
+
 # ==================== КЛАВИАТУРЫ ====================
 def get_main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📸 Обновить фото доски меню", callback_data="hint_photo")],
         [InlineKeyboardButton(text="📦 Стоп-лист (Наличие)", callback_data="open_stock")],
         [InlineKeyboardButton(text="💰 Редактор цен", callback_data="open_prices")],
         [InlineKeyboardButton(text="🚪 Выйти", callback_data="logout")]
@@ -121,7 +138,7 @@ def build_price_keyboard(current_prices: dict) -> InlineKeyboardMarkup:
     keyboard.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="back_main")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# ==================== ПОШАГОВАЯ АВТОРИЗАЦИЯ ====================
+# ==================== АВТОРИЗАЦИЯ ====================
 @dp.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     if message.from_user.id in authenticated_admins:
@@ -162,7 +179,9 @@ async def process_password(message: Message, state: FSMContext):
         authenticated_admins.add(message.from_user.id)
         await state.clear()
         await message.answer(
-            "✅ <b>Авторизация успешна!</b>\nВыберите раздел для управления:",
+            "✅ <b>Авторизация успешна!</b>\n\n"
+            "• Чтобы изменить фото меню: просто <b>отправьте сюда фотографию</b> доски.\n"
+            "• Или выберите раздел ниже:",
             reply_markup=get_main_menu(),
             parse_mode="HTML"
         )
@@ -172,6 +191,51 @@ async def process_password(message: Message, state: FSMContext):
             "❌ <b>Неверные данные!</b> Доступ запрещен.\nДля повторной попытки нажмите /start",
             parse_mode="HTML"
         )
+
+# ==================== ЗАГРУЗКА ФОТО МЕНЮ ====================
+@dp.callback_query(F.data == "hint_photo")
+async def cb_hint_photo(query: CallbackQuery):
+    if query.from_user.id not in authenticated_admins:
+        return await query.answer("Требуется вход через /start", show_alert=True)
+    await query.message.answer("📷 Чтобы обновить доску меню, просто <b>отправьте фото</b> в этот чат как обычную картинку.", parse_mode="HTML")
+    await query.answer()
+
+@dp.message(F.photo)
+async def handle_menu_photo(message: Message):
+    if message.from_user.id not in authenticated_admins:
+        return await message.answer("⚠️ Сначала войдите в систему через /start")
+
+    status_msg = await message.answer("⏳ Загружаю фотографию на сервер меню...")
+
+    try:
+        # Скачиваем наибольший доступный размер фото
+        photo = message.photo[-1]
+        file_info = await bot.get_file(photo.file_id)
+        file_bytes_io = await bot.download_file(file_info.file_path)
+        file_bytes = file_bytes_io.read()
+
+        # Выгружаем на публичный CDN
+        image_url = await upload_image_to_web(file_bytes)
+        if not image_url:
+            return await status_msg.edit_text("❌ Ошибка загрузки изображения на хостинг. Попробуйте еще раз.")
+
+        # Сохраняем в JSONBin
+        bin_data = await get_bin_data()
+        bin_data["image_url"] = image_url
+        success = await update_bin_data(bin_data)
+
+        if success:
+            await status_msg.edit_text(
+                "✅ <b>Фотография меню успешно обновлена!</b>\n\n"
+                "Новое фото появится на сайте и в приложении в течение пары минут (после обновления кэша).",
+                parse_mode="HTML",
+                reply_markup=get_main_menu()
+            )
+        else:
+            await status_msg.edit_text("❌ Не удалось обновить данные в базе JSONBin.")
+    except Exception as e:
+        logging.error(f"Ошибка при обработке фото: {e}")
+        await status_msg.edit_text("❌ Произошла непредвиденная ошибка при загрузке фото.")
 
 # ==================== НАВИГАЦИЯ И СТОП-ЛИСТ ====================
 @dp.callback_query(F.data == "back_main")
@@ -280,19 +344,17 @@ async def render_health_check(request):
 
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
-    print("Бот управления «Буузная Адис» v2.1 запущен...")
+    print("Бот управления «Буузная Адис» v2.2 запущен...")
 
-    # Открываем фиктивный веб-порт, чтобы Render переключил статус в Live
     app = web.Application()
     app.router.add_get("/", render_health_check)
     app.router.add_get("/health", render_health_check)
     runner = web.AppRunner(app)
     await runner.setup()
     
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    print(f"Микросервер для Render открыт на порту {port}")
 
     await dp.start_polling(bot)
 
